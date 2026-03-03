@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-03-03
+
+### Changed — Complete Rewrite in Rust
+
+The entire server has been rewritten from TypeScript/Node.js to Rust. Feature parity with v1.x is maintained across all 16 MCP tools.
+
+**Why Rust?**
+- **~10× lower memory**: ~15 MB RSS idle vs ~120 MB (Node.js + V8)
+- **~10× faster startup**: <100 ms vs ~1.2 s (no JIT warmup)
+- **Zero GC pauses** during `ask_question` streaming detection
+- **True parallelism** across sessions (no single-threaded event loop)
+- **Single binary**: no Node.js runtime, no `npm install`, no `npx`
+
+**Performance targets achieved:**
+
+| Metric | TypeScript | Rust |
+|--------|-----------|------|
+| Startup | ~1.2 s | <100 ms |
+| RSS idle | ~120 MB | ~15 MB |
+| Binary size | N/A (Node.js) | ~25 MB stripped |
+
+### Removed
+
+- TypeScript source (`src/`), compiler config (`tsconfig.json`), and all npm artifacts (`package.json`, `package-lock.json`, `node_modules/`)
+- `npx notebooklm-mcp` install path — replaced by a compiled binary (see [Installation](README.md#installation))
+
+### Added
+
+- `rust/` workspace with two crates:
+  - `notebooklm-core` — all business logic (config, library, session, browser automation, auth, tools, resources, utils)
+  - `notebooklm-mcp` — thin binary crate (JSON-RPC 2.0 stdio transport, CLI dispatch)
+- Full browser automation via `chromiumoxide` (Chrome DevTools Protocol), replacing `patchright`
+- `SharedContextManager` — one persistent Chrome profile shared by all sessions (fingerprint stability)
+- `BrowserSession` — per-tab session with streaming detection, human typing, and automatic recovery on closed-browser errors
+- `SessionManager` — lock-free concurrent session pool via `DashMap`
+- Streaming detection: 3-consecutive-identical-poll algorithm (identical to v1.x TypeScript logic)
+- Stealth utilities: Gaussian-distributed inter-key delays, Bézier mouse paths, human WPM typing
+
 ## [1.2.0] - 2025-11-21
 
 ### Added

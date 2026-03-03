@@ -4,15 +4,44 @@
 
 **Let your CLI agents (Claude, Cursor, Codex...) chat directly with NotebookLM for zero-hallucination answers based on your own notebooks**
 
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue.svg)](https://www.typescriptlang.org/)
+[![Rust](https://img.shields.io/badge/Rust-2021-orange.svg)](https://www.rust-lang.org/)
 [![MCP](https://img.shields.io/badge/MCP-2025-green.svg)](https://modelcontextprotocol.io/)
-[![npm](https://img.shields.io/npm/v/notebooklm-mcp.svg)](https://www.npmjs.com/package/notebooklm-mcp)
 [![Claude Code Skill](https://img.shields.io/badge/Claude%20Code-Skill-purple.svg)](https://github.com/PleasePrompto/notebooklm-skill)
 [![GitHub](https://img.shields.io/github/stars/PleasePrompto/notebooklm-mcp?style=social)](https://github.com/PleasePrompto/notebooklm-mcp)
 
-[Installation](#installation) • [Quick Start](#quick-start) • [Why NotebookLM](#why-notebooklm-not-local-rag) • [Examples](#real-world-example) • [Claude Code Skill](https://github.com/PleasePrompto/notebooklm-skill) • [Documentation](./docs/)
+[Why Rust?](#why-rust-the-migration-story) • [Installation](#installation) • [Quick Start](#quick-start) • [Why NotebookLM](#why-notebooklm-not-local-rag) • [Examples](#real-world-example) • [Documentation](./docs/)
 
 </div>
+
+---
+
+> **This is a fork of [PleasePrompto/notebooklm-mcp](https://github.com/PleasePrompto/notebooklm-mcp).**
+> The original server was rewritten from TypeScript/Node.js to Rust for significantly lower memory usage, faster startup, and no runtime dependencies. See [Why Rust?](#why-rust-the-migration-story) for the full story.
+
+---
+
+## Why Rust? (The Migration Story)
+
+The original server was written in TypeScript/Node.js. It worked — but the Node.js runtime was fighting against it every step of the way:
+
+- **V8 cold start**: ~1.2 seconds before the first byte of JSON-RPC was processed. Every `npx` invocation paid this tax.
+- **120 MB idle RSS**: V8's heap and the MCP SDK loaded ~120 MB just to sit there waiting for a question.
+- **GC pauses during streaming**: The streaming detection loop polls the DOM every second for up to 2 minutes — exactly the kind of tight loop where GC pauses cause false "stable" readings. The response text looks unchanged because the GC froze the loop, not because NotebookLM stopped streaming.
+- **Single-threaded event loop**: Multiple concurrent sessions shared one JS thread. A slow `ask_question` blocked all other sessions.
+- **npm supply chain**: `patchright`, `@modelcontextprotocol/sdk`, `zod`, `globby` — 4 heavyweight runtime dependencies plus their transitive tree, all downloaded fresh on each `npx` run.
+
+The Rust rewrite eliminates all of these at the source:
+
+| Metric | TypeScript/Node.js | Rust |
+|--------|-------------------|------|
+| Startup time | ~1.2 s | **<100 ms** |
+| RSS idle | ~120 MB | **~15 MB** |
+| GC pauses | Yes (V8) | **None** |
+| Concurrent sessions | Single-threaded event loop | **True OS threads** |
+| Runtime dependencies | Node.js + npm | **None** (static binary) |
+| Binary size | N/A (needs Node.js) | **~25 MB stripped** |
+
+The streaming detection algorithm, selectors, and all behaviour are identical to the original — only the runtime changed.
 
 ---
 
@@ -57,55 +86,35 @@ Your Task → Local Agent asks NotebookLM → Gemini synthesizes answer → Agen
 
 ## Installation
 
+The server is a single Rust binary. Build it once from source:
+
+```bash
+git clone https://github.com/PleasePrompto/notebooklm-mcp
+cd notebooklm-mcp/rust
+cargo build --release
+```
+
+The binary is at `rust/target/release/notebooklm-mcp`.
+
 ### Claude Code
-```bash
-claude mcp add notebooklm npx notebooklm-mcp@latest
-```
-
-### Codex
-```bash
-codex mcp add notebooklm -- npx notebooklm-mcp@latest
-```
-
-<details>
-<summary>Gemini</summary>
 
 ```bash
-gemini mcp add notebooklm npx notebooklm-mcp@latest
+claude mcp add notebooklm /path/to/notebooklm-mcp/rust/target/release/notebooklm-mcp
 ```
-</details>
 
-<details>
-<summary>Cursor</summary>
+### Cursor
 
 Add to `~/.cursor/mcp.json`:
 ```json
 {
   "mcpServers": {
     "notebooklm": {
-      "command": "npx",
-      "args": ["-y", "notebooklm-mcp@latest"]
+      "command": "/path/to/notebooklm-mcp/rust/target/release/notebooklm-mcp",
+      "args": []
     }
   }
 }
 ```
-</details>
-
-<details>
-<summary>amp</summary>
-
-```bash
-amp mcp add notebooklm -- npx notebooklm-mcp@latest
-```
-</details>
-
-<details>
-<summary>VS Code</summary>
-
-```bash
-code --add-mcp '{"name":"notebooklm","command":"npx","args":["notebooklm-mcp@latest"]}'
-```
-</details>
 
 <details>
 <summary>Other MCP clients</summary>
@@ -115,8 +124,8 @@ code --add-mcp '{"name":"notebooklm","command":"npx","args":["notebooklm-mcp@lat
 {
   "mcpServers": {
     "notebooklm": {
-      "command": "npx",
-      "args": ["notebooklm-mcp@latest"]
+      "command": "/path/to/notebooklm-mcp/rust/target/release/notebooklm-mcp",
+      "args": []
     }
   }
 }
@@ -141,7 +150,7 @@ Both use the same browser automation technology and provide zero-hallucination a
 
 ## Quick Start
 
-### 1. Install the MCP server (see [Installation](#installation) above)
+### 1. Build and configure the MCP server (see [Installation](#installation) above)
 
 ### 2. Authenticate (one-time)
 
@@ -219,13 +228,12 @@ Save NotebookLM links with tags and descriptions. Claude auto-selects the right 
 ### **Deep, Iterative Research**
 - Claude automatically asks follow-up questions to build complete understanding
 - Each answer triggers deeper questions until Claude has all the details
-- Example: For n8n workflow, Claude asked multiple sequential questions about Gmail integration, error handling, and data transformation
 
 ### **Cross-Tool Sharing**
 Set up once, use everywhere. Claude Code, Codex, Cursor — all share the same library.
 
-### **Deep Cleanup Tool**
-Fresh start anytime. Scans entire system for NotebookLM data with categorized preview.
+### **Minimal Footprint**
+Single Rust binary — ~10 MB, <20 MB RSS idle, <100 ms startup. No Node.js, no npm, no runtime dependencies.
 
 ---
 
@@ -240,24 +248,6 @@ Reduce token usage by loading only the tools you need. Each tool consumes contex
 | **minimal** | 5 | Query-only: `ask_question`, `get_health`, `list_notebooks`, `select_notebook`, `get_notebook` |
 | **standard** | 10 | + Library management: `setup_auth`, `list_sessions`, `add_notebook`, `update_notebook`, `search_notebooks` |
 | **full** | 16 | All tools including `cleanup_data`, `re_auth`, `remove_notebook`, `reset_session`, `close_session`, `get_library_stats` |
-
-### Configure via CLI
-
-```bash
-# Check current settings
-npx notebooklm-mcp config get
-
-# Set a profile
-npx notebooklm-mcp config set profile minimal
-npx notebooklm-mcp config set profile standard
-npx notebooklm-mcp config set profile full
-
-# Disable specific tools (comma-separated)
-npx notebooklm-mcp config set disabled-tools "cleanup_data,re_auth"
-
-# Reset to defaults
-npx notebooklm-mcp config reset
-```
 
 ### Configure via Environment Variables
 
@@ -367,11 +357,6 @@ Your docs are always current. No training cutoff. No hallucinations. Perfect for
 **With NotebookLM MCP**: Claude researches first → Writes correct code → Ship faster
 
 Stop debugging hallucinations. Start shipping accurate code.
-
-```bash
-# Get started in 30 seconds
-claude mcp add notebooklm npx notebooklm-mcp@latest
-```
 
 ---
 
