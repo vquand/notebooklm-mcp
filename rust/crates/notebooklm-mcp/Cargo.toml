@@ -1,0 +1,19 @@
+[package]
+name = "notebooklm-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "NotebookLM MCP Server — Rust rewrite for CPU + memory efficiency"
+
+[[bin]]
+name = "notebooklm-mcp"
+path = "src/main.rs"
+
+[dependencies]
+notebooklm-core = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+dotenvy = { workspace = true }
+serde_json = { workspace = true }

@@ -1,0 +1,79 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/notebooklm-mcp",
+    "crates/notebooklm-core",
+]
+
+[workspace.package]
+version = "1.2.1"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# MCP protocol (Phase 3) — official Rust SDK
+# rmcp = { version = "0.1", features = ["server", "transport-io"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# JSON Schema for MCP tool definitions (Phase 3)
+schemars = { version = "0.8", features = ["derive"] }
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Logging to stderr (stdout is reserved for MCP JSON-RPC)
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "ansi"] }
+
+# .env file loading
+dotenvy = "0.15"
+
+# Cross-platform app directories (replaces env-paths npm package)
+# Linux:   ~/.local/share/notebooklm-mcp/  &  ~/.config/notebooklm-mcp/
+# macOS:   ~/Library/Application Support/notebooklm-mcp/
+# Windows: %APPDATA%\notebooklm-mcp\
+directories = "5"
+
+# Random numbers + Gaussian/Normal distribution (stealth delays)
+rand = "0.8"
+rand_distr = "0.4"
+
+# Concurrent HashMap — no external RwLock needed (Phase 5)
+dashmap = "6"
+
+# Browser automation via Chrome DevTools Protocol (Phase 5)
+# tokio is the default runtime in 0.9+
+chromiumoxide = "0.9"
+futures = "0.3"
+
+# Hex encoding for session IDs (Phase 5)
+hex = "0.4"
+
+# Recursive filesystem traversal (replaces globby)
+walkdir = "2"
+
+# Slug generation for notebook IDs (replaces manual regex)
+slug = "0.1"
+
+# Timestamps with serde support
+chrono = { version = "0.4", features = ["serde"] }
+
+# Internal crate reference
+notebooklm-core = { path = "crates/notebooklm-core" }
+
+[profile.release]
+opt-level = 3
+lto = "fat"           # link-time optimisation → smaller + faster binary
+codegen-units = 1     # single codegen unit → maximum inlining
+strip = true          # strip debug symbols from release binary
+
+[profile.dev]
+opt-level = 0
+debug = true

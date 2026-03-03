@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "notebooklm-mcp-rust": {
+      "type": "stdio",
+      "command": "/Users/willdo/Documents/GitHub/notebooklm-mcp/rust/target/debug/notebooklm-mcp",
+      "args": [],
+      "env": {}
+    }
+  }
+}
