@@ -7,6 +7,7 @@
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
+use chromiumoxide::Page;
 use dashmap::DashMap;
 use rand::Rng;
 
@@ -142,6 +143,16 @@ impl SessionManager {
 
     pub fn get_session(&self, session_id: &str) -> Option<Arc<BrowserSession>> {
         self.sessions.get(session_id).map(|e| Arc::clone(e.value()))
+    }
+
+    // -----------------------------------------------------------------------
+    // Auth support
+    // -----------------------------------------------------------------------
+
+    /// Open a new browser page for interactive auth (setup_auth / re_auth).
+    /// The page is NOT tracked as a session — the caller is responsible for closing it.
+    pub async fn new_page_for_auth(&self, show_browser: bool) -> Result<Page> {
+        self.shared_ctx.new_page(Some(show_browser)).await
     }
 
     // -----------------------------------------------------------------------

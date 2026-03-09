@@ -1,22 +1,21 @@
-//! Authentication Manager (Phase 5 minimal implementation)
+//! Authentication Manager (Phase 6 — interactive OAuth login)
 //!
 //! Handles:
 //! - Reading saved browser state (Playwright storageState JSON format)
 //! - Validating cookie expiry via CDP
 //! - Injecting cookies into a chromiumoxide Page
 //! - Session storage restore
-//!
-//! Full interactive login (setup_auth / re_auth) is implemented in Phase 6.
+//! - Interactive Google login (setup_auth / re_auth) via browser automation
 
 use std::path::PathBuf;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{anyhow, Result};
 use chromiumoxide::Page;
 use chromiumoxide::cdp::browser_protocol::network::CookieParam;
 use serde::Deserialize;
 
-use crate::config::config;
+use crate::config::{config, NOTEBOOKLM_AUTH_URL};
 
 // ---------------------------------------------------------------------------
 // Critical Google auth cookie names
@@ -267,5 +266,165 @@ impl AuthManager {
             "authenticated": self.has_saved_state() && !self.is_state_expired(),
             "state_path": self.state_path.display().to_string(),
         })
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 6: Interactive login
+    // -----------------------------------------------------------------------
+
+    /// Navigate to Google sign-in in `page`, wait for the user to complete login,
+    /// then save the resulting cookies to `state.json`.
+    ///
+    /// Login is detected when:
+    ///   1. The page URL changes to `notebooklm.google.com` (redirect after login), OR
+    ///   2. Critical Google auth cookies become present and valid.
+    ///
+    /// `timeout_ms` — how long to wait before giving up (default: 10 minutes).
+    pub async fn interactive_login(&self, page: &Page, timeout_ms: u64) -> Result<()> {
+        tracing::info!("interactive_login: navigating to Google sign-in...");
+
+        page.goto(NOTEBOOKLM_AUTH_URL)
+            .await
+            .map_err(|e| anyhow!("Failed to navigate to auth URL: {e}"))?;
+
+        let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
+        let poll_interval = Duration::from_secs(2);
+
+        tracing::info!(
+            "interactive_login: waiting for login (timeout {}s)...",
+            timeout_ms / 1000
+        );
+
+        loop {
+            if std::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "Login timed out after {}s — please call setup_auth again to retry",
+                    timeout_ms / 1000
+                ));
+            }
+
+            // Check if the browser has been redirected to NotebookLM.
+            // Wrap in a timeout — page.evaluate can hang indefinitely while the
+            // page is loading (e.g. after navigating to NotebookLM).
+            let current_url: String = match tokio::time::timeout(
+                Duration::from_secs(3),
+                page.evaluate("window.location.href"),
+            )
+            .await
+            {
+                Ok(Ok(obj)) => obj
+                    .value()
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+                    .unwrap_or_default(),
+                Ok(Err(e)) => {
+                    tracing::debug!("interactive_login: evaluate error: {e}");
+                    String::new()
+                }
+                Err(_) => {
+                    tracing::debug!("interactive_login: evaluate timed out — page busy, checking cookies");
+                    String::new()
+                }
+            };
+
+            tracing::debug!("interactive_login: url = {current_url}");
+
+            if current_url.contains("notebooklm.google.com")
+                && !current_url.contains("accounts.google.com")
+            {
+                tracing::info!("interactive_login: redirect to NotebookLM detected — saving cookies");
+                self.save_cookies_from_page(page).await?;
+                return Ok(());
+            }
+
+            // Fallback: check cookies even if URL hasn't changed yet
+            if !current_url.is_empty()
+                && !current_url.contains("accounts.google.com/v3/signin")
+                && self.validate_cookies_expiry(page).await
+            {
+                tracing::info!("interactive_login: auth cookies detected — saving cookies");
+                self.save_cookies_from_page(page).await?;
+                return Ok(());
+            }
+
+            tokio::time::sleep(poll_interval).await;
+        }
+    }
+
+    /// Extract all cookies from `page` and write them to `state.json` in
+    /// Playwright storageState format so they can be restored on next startup.
+    pub async fn save_cookies_from_page(&self, page: &Page) -> Result<()> {
+        let cookies = page
+            .get_cookies()
+            .await
+            .map_err(|e| anyhow!("Failed to read cookies from page: {e}"))?;
+
+        let serialized: Vec<serde_json::Value> = cookies
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "name":     c.name,
+                    "value":    c.value,
+                    "domain":   c.domain,
+                    "path":     c.path,
+                    "expires":  c.expires,
+                    "httpOnly": c.http_only,
+                    "secure":   c.secure,
+                })
+            })
+            .collect();
+
+        let state = serde_json::json!({ "cookies": serialized });
+
+        if let Some(parent) = self.state_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| anyhow!("Cannot create browser_state dir: {e}"))?;
+        }
+
+        std::fs::write(
+            &self.state_path,
+            serde_json::to_string_pretty(&state)
+                .map_err(|e| anyhow!("JSON serialization failed: {e}"))?,
+        )
+        .map_err(|e| anyhow!("Cannot write state.json: {e}"))?;
+
+        tracing::info!(
+            "save_cookies_from_page: saved {} cookies to {}",
+            serialized.len(),
+            self.state_path.display()
+        );
+        Ok(())
+    }
+
+    /// Delete `state.json` and `session.json` (auth tokens).
+    /// Called before re_auth to force a fresh login.
+    pub fn clear_auth_state(&self) -> Result<()> {
+        if self.state_path.exists() {
+            std::fs::remove_file(&self.state_path)
+                .map_err(|e| anyhow!("Cannot delete state.json: {e}"))?;
+            tracing::info!("clear_auth_state: deleted {}", self.state_path.display());
+        }
+        if self.session_path.exists() {
+            std::fs::remove_file(&self.session_path).ok();
+            tracing::info!("clear_auth_state: deleted {}", self.session_path.display());
+        }
+        Ok(())
+    }
+
+    /// Delete the persistent Chrome profile directory so the next browser
+    /// launch starts with a completely clean profile (no stored Google cookies).
+    pub fn clear_chrome_profile(&self) -> Result<()> {
+        let profile_dir = &config().chrome_profile_dir;
+        if profile_dir.exists() {
+            std::fs::remove_dir_all(profile_dir)
+                .map_err(|e| anyhow!("Cannot delete Chrome profile: {e}"))?;
+            std::fs::create_dir_all(profile_dir)
+                .map_err(|e| anyhow!("Cannot recreate Chrome profile dir: {e}"))?;
+            tracing::info!(
+                "clear_chrome_profile: cleared {}",
+                profile_dir.display()
+            );
+        }
+        Ok(())
     }
 }

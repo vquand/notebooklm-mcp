@@ -28,6 +28,7 @@ pub struct Config {
 
     // Browser
     pub headless: bool,
+    pub chrome_executable: Option<PathBuf>,
     pub browser_timeout: u64, // milliseconds
     pub viewport_width: u32,
     pub viewport_height: u32,
@@ -136,6 +137,7 @@ impl Config {
             notebook_url: env_string("NOTEBOOK_URL", ""),
 
             headless: env_bool("HEADLESS", true),
+            chrome_executable: env_chrome_executable(),
             browser_timeout: env_u64("BROWSER_TIMEOUT", 30_000),
             viewport_width: env_u32("VIEWPORT_WIDTH", 1024),
             viewport_height: env_u32("VIEWPORT_HEIGHT", 768),
@@ -294,6 +296,42 @@ fn env_u32(key: &str, default: u32) -> u32 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(default)
+}
+
+/// Resolve the Chrome/Chromium-compatible executable to use.
+///
+/// Priority:
+///   1. `CHROME_PATH` env var (explicit override)
+///   2. Well-known macOS paths (Chrome → Edge → Chromium)
+///   3. `None` → chromiumoxide uses its own auto-discovery
+fn env_chrome_executable() -> Option<PathBuf> {
+    // 1. Explicit override
+    if let Ok(p) = std::env::var("CHROME_PATH") {
+        let path = PathBuf::from(&p);
+        if path.exists() {
+            return Some(path);
+        }
+        tracing::warn!("CHROME_PATH={p} does not exist — falling back to auto-detect");
+    }
+
+    // 2. Auto-detect common macOS paths
+    #[cfg(target_os = "macos")]
+    {
+        let candidates = [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        ];
+        for p in &candidates {
+            let path = PathBuf::from(p);
+            if path.exists() {
+                tracing::info!("Auto-detected browser: {p}");
+                return Some(path);
+            }
+        }
+    }
+
+    None
 }
 
 fn env_vec(key: &str, default: Vec<String>) -> Vec<String> {

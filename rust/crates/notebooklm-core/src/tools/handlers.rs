@@ -303,9 +303,9 @@ impl ToolHandlers {
             "data": {
                 "server": {
                     "version": env!("CARGO_PKG_VERSION"),
-                    "runtime": "Rust (Phase 5 — browser automation active)",
+                    "runtime": "Rust (Phase 6 — interactive OAuth active)",
                     "uptime_seconds": uptime_seconds,
-                    "phase": "Phase 5 — browser automation active"
+                    "phase": "Phase 6 — interactive OAuth active"
                 },
                 "authentication": auth_info,
                 "sessions": session_stats,
@@ -329,24 +329,107 @@ impl ToolHandlers {
     }
 
     // -----------------------------------------------------------------------
-    // Auth tools  (Phase 6 stubs)
+    // Auth tools  (Phase 6 — interactive OAuth login)
     // -----------------------------------------------------------------------
 
-    pub async fn handle_setup_auth(&self, _args: &Value) -> anyhow::Result<Value> {
-        Ok(json!({
-            "success": false,
-            "error": "Interactive setup_auth requires Phase 6 of the Rust migration. \
-Use the TypeScript version (`npx notebooklm-mcp`) for authentication setup, \
-or set NOTEBOOKLM_EMAIL and NOTEBOOKLM_PASSWORD environment variables."
-        }))
+    pub async fn handle_setup_auth(&self, args: &Value) -> anyhow::Result<Value> {
+        let show_browser = args["show_browser"].as_bool().unwrap_or(true);
+        // Honour browser_options.timeout_ms if provided; default 10 minutes
+        let timeout_ms = args["browser_options"]["timeout_ms"]
+            .as_u64()
+            .unwrap_or(600_000);
+
+        tracing::info!(
+            "setup_auth: opening browser for Google login (show={show_browser}, timeout={}s)",
+            timeout_ms / 1000
+        );
+
+        let page = match self
+            .session_manager
+            .new_page_for_auth(show_browser)
+            .await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                return Ok(json!({
+                    "success": false,
+                    "error": format!("Failed to open browser: {e}")
+                }))
+            }
+        };
+
+        match self.auth_manager.interactive_login(&page, timeout_ms).await {
+            Ok(()) => {
+                let _ = page.close().await;
+                Ok(json!({
+                    "success": true,
+                    "message": "Authentication successful. Cookies saved to state.json. \
+You can now use ask_question."
+                }))
+            }
+            Err(e) => {
+                let _ = page.close().await;
+                Ok(json!({
+                    "success": false,
+                    "error": e.to_string()
+                }))
+            }
+        }
     }
 
-    pub async fn handle_re_auth(&self, _args: &Value) -> anyhow::Result<Value> {
-        Ok(json!({
-            "success": false,
-            "error": "Interactive re_auth requires Phase 6 of the Rust migration. \
-Use the TypeScript version (`npx notebooklm-mcp`) for re-authentication."
-        }))
+    pub async fn handle_re_auth(&self, args: &Value) -> anyhow::Result<Value> {
+        let show_browser = args["show_browser"].as_bool().unwrap_or(true);
+        let timeout_ms = args["browser_options"]["timeout_ms"]
+            .as_u64()
+            .unwrap_or(600_000);
+
+        tracing::info!("re_auth: closing all sessions and clearing auth state...");
+
+        // 1. Close every active session and the shared browser
+        self.session_manager.close_all().await;
+
+        // 2. Delete saved cookies and Chrome profile (start completely fresh)
+        if let Err(e) = self.auth_manager.clear_auth_state() {
+            return Ok(json!({ "success": false, "error": format!("clear_auth_state failed: {e}") }));
+        }
+        if let Err(e) = self.auth_manager.clear_chrome_profile() {
+            return Ok(json!({ "success": false, "error": format!("clear_chrome_profile failed: {e}") }));
+        }
+
+        tracing::info!("re_auth: launching fresh browser for re-authentication...");
+
+        // 3. Open a new browser tab and run the interactive login flow
+        let page = match self
+            .session_manager
+            .new_page_for_auth(show_browser)
+            .await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                return Ok(json!({
+                    "success": false,
+                    "error": format!("Failed to open browser: {e}")
+                }))
+            }
+        };
+
+        match self.auth_manager.interactive_login(&page, timeout_ms).await {
+            Ok(()) => {
+                let _ = page.close().await;
+                Ok(json!({
+                    "success": true,
+                    "message": "Re-authentication successful. Previous sessions cleared. \
+New cookies saved. You can now use ask_question."
+                }))
+            }
+            Err(e) => {
+                let _ = page.close().await;
+                Ok(json!({
+                    "success": false,
+                    "error": e.to_string()
+                }))
+            }
+        }
     }
 
     // -----------------------------------------------------------------------

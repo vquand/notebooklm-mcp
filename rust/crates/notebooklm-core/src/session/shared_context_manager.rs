@@ -209,8 +209,17 @@ async fn do_launch(profile_dir: &PathBuf, headless: bool) -> Result<Browser> {
         .arg("--disable-infobars")
         .arg("--lang=en-US");
 
+    // Apply explicit executable if configured
+    let exe = config().chrome_executable.clone();
+    if let Some(ref path) = exe {
+        tracing::info!("Using browser executable: {}", path.display());
+        builder = builder.chrome_executable(path);
+    }
+
     if headless {
-        builder = builder.arg("--headless=new");
+        builder = builder.new_headless_mode();
+    } else {
+        builder = builder.with_head().window_size(1280, 900);
     }
 
     let config_built = builder
@@ -219,12 +228,26 @@ async fn do_launch(profile_dir: &PathBuf, headless: bool) -> Result<Browser> {
 
     let (browser, mut handler) = Browser::launch(config_built)
         .await
-        .map_err(|e| anyhow!("Failed to launch Chrome: {e}. Ensure Google Chrome is installed."))?;
+        .map_err(|e| anyhow!("Failed to launch browser: {e}. Ensure Google Chrome or Microsoft Edge is installed."))?;
 
     // CDP handler MUST be continuously polled — spawn a background task
     tokio::spawn(async move {
         while handler.next().await.is_some() {}
     });
+
+    if !headless {
+        let browser_name = exe
+            .as_deref()
+            .and_then(|p| p.to_str()?.split('/').last().map(|s| s.to_string()))
+            .unwrap_or_else(|| "Chrome/Edge".to_string());
+        tracing::info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        tracing::info!("  Browser launched: {browser_name}");
+        tracing::info!("  A new browser window opened with the Google sign-in page.");
+        tracing::info!("  ➜ Switch to that window and log in with your Google account.");
+        tracing::info!("  NOTE: if {browser_name} was already open, the new window may");
+        tracing::info!("  be hidden behind existing windows — check your Dock/taskbar.");
+        tracing::info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    }
 
     Ok(browser)
 }
