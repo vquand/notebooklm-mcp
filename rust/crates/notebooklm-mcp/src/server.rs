@@ -207,6 +207,7 @@ impl McpServer {
             "remove_notebook" => self.tool_handlers.handle_remove_notebook(args).await,
             "search_notebooks" => self.tool_handlers.handle_search_notebooks(args).await,
             "get_library_stats" => self.tool_handlers.handle_get_library_stats().await,
+            "remove_source" => self.tool_handlers.handle_remove_source(args).await,
             "list_sessions" => self.tool_handlers.handle_list_sessions().await,
             "close_session" => self.tool_handlers.handle_close_session(args).await,
             "reset_session" => self.tool_handlers.handle_reset_session(args).await,

@@ -53,6 +53,9 @@ dashmap = "6"
 chromiumoxide = "0.9"
 futures = "0.3"
 
+# Base64 encoding (for file drag-and-drop via JS bridge)
+base64 = "0.22"
+
 # Hex encoding for session IDs (Phase 5)
 hex = "0.4"
 

@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 
 use crate::library::NotebookLibrary;
 
-/// Build all 16 tool definitions.
+/// Build all tool definitions.
 /// The `ask_question` description is dynamic (depends on the active notebook).
 pub fn build_all_tools(library: &NotebookLibrary) -> Vec<Value> {
     vec![
@@ -20,6 +20,7 @@ pub fn build_all_tools(library: &NotebookLibrary) -> Vec<Value> {
         remove_notebook_tool(),
         search_notebooks_tool(),
         get_library_stats_tool(),
+        remove_source_tool(),
         list_sessions_tool(),
         close_session_tool(),
         reset_session_tool(),
@@ -299,6 +300,35 @@ fn get_library_stats_tool() -> Value {
         "name": "get_library_stats",
         "description": "Get statistics about your notebook library (total notebooks, usage, etc.)",
         "inputSchema": { "type": "object", "properties": {} }
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Source management tools
+// ---------------------------------------------------------------------------
+
+fn remove_source_tool() -> Value {
+    json!({
+        "name": "remove_source",
+        "description": "Remove a source from a specific NotebookLM notebook by its document title.\n\n## Workflow\n1) Identify the target notebook (notebook_id or notebook_url)\n2) Provide the exact document title as it appears in the sources panel\n3) The tool opens the notebook in a browser, finds the source, opens its context menu, and clicks Remove\n\n## Notes\n- The document_name must match the source title exactly (case-insensitive)\n- Open the notebook manually to confirm the exact title",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "document_name": {
+                    "type": "string",
+                    "description": "Exact title of the source to remove, as shown in the NotebookLM sources panel (case-insensitive)"
+                },
+                "notebook_id": {
+                    "type": "string",
+                    "description": "ID of the target notebook in your library. If omitted, uses the active notebook."
+                },
+                "notebook_url": {
+                    "type": "string",
+                    "description": "Direct NotebookLM notebook URL (overrides notebook_id). Use for notebooks not in your library."
+                }
+            },
+            "required": ["document_name"]
+        }
     })
 }
 

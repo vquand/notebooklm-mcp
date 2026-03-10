@@ -8,9 +8,13 @@ use std::sync::Arc;
 use anyhow::anyhow;
 use serde_json::{json, Value};
 
+use chromiumoxide::Page;
+
 use crate::auth::AuthManager;
 use crate::library::{AddNotebookInput, NotebookLibrary, UpdateNotebookInput};
 use crate::session::SessionManager;
+use crate::tools::source_ops;
+use crate::utils::stealth::random_delay;
 
 /// Follow-up reminder appended to every successful `ask_question` answer.
 const FOLLOW_UP_REMINDER: &str = "\n\n---\n\
@@ -430,6 +434,173 @@ New cookies saved. You can now use ask_question."
                 }))
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Source management  (remove_source)
+    // -----------------------------------------------------------------------
+
+    /// Remove a source from a specific notebook by its document title.
+    pub async fn handle_remove_source(&self, args: &Value) -> anyhow::Result<Value> {
+        let notebook_url = self.resolve_notebook_url(args)?;
+
+        let document_name = args["document_name"]
+            .as_str()
+            .ok_or_else(|| anyhow!("Missing required parameter 'document_name'"))?
+            .to_string();
+
+        tracing::info!(
+            "remove_source: notebook='{}' document='{}'",
+            &notebook_url[..notebook_url.len().min(60)],
+            document_name
+        );
+
+        let page = self.navigate_notebook_page(&notebook_url).await?;
+
+        let result = source_ops::browser_remove_source(&page, &document_name).await;
+        let _ = page.close().await;
+
+        match result {
+            Ok(true) => Ok(json!({
+                "success": true,
+                "data": {
+                    "message": format!("Source '{}' removed from notebook", document_name),
+                    "document_name": document_name,
+                    "notebook_url": notebook_url
+                }
+            })),
+            Ok(false) => Ok(json!({
+                "success": false,
+                "error": format!(
+                    "Source '{}' not found in notebook. \
+                     Check the exact document title as it appears in the sources panel.",
+                    document_name
+                )
+            })),
+            Err(e) => Ok(json!({ "success": false, "error": e.to_string() })),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Private: notebook URL resolution + authenticated page navigation
+    // -----------------------------------------------------------------------
+
+    /// Resolve notebook URL from `notebook_id` or `notebook_url` argument,
+    /// falling back to the active notebook in the library.
+    fn resolve_notebook_url(&self, args: &Value) -> anyhow::Result<String> {
+        // 1. Direct URL argument
+        if let Some(u) = args["notebook_url"].as_str().filter(|s| !s.is_empty()) {
+            return Ok(u.to_string());
+        }
+        // 2. Notebook ID argument → look up in library
+        if let Some(id) = args["notebook_id"].as_str().filter(|s| !s.is_empty()) {
+            return self
+                .library
+                .get_notebook(id)
+                .map(|nb| nb.url.clone())
+                .ok_or_else(|| anyhow!("Notebook not found in library: {id}"));
+        }
+        // 3. Active notebook
+        self.library
+            .get_active_notebook()
+            .map(|nb| nb.url.clone())
+            .ok_or_else(|| {
+                anyhow!(
+                    "No notebook specified. Provide 'notebook_id' or 'notebook_url', \
+                     or select an active notebook with select_notebook."
+                )
+            })
+    }
+
+    /// Open a new browser page, navigate to `notebook_url`, inject auth cookies,
+    /// and wait for the notebook UI to load.
+    async fn navigate_notebook_page(&self, notebook_url: &str) -> anyhow::Result<Page> {
+        let page = self
+            .session_manager
+            .new_page_for_auth(false)
+            .await
+            .map_err(|e| anyhow!("Failed to open browser page: {e}"))?;
+
+        // Force a wide viewport so NotebookLM renders both the sources panel AND the
+        // chat panel side-by-side (narrow viewports collapse the sources panel).
+        use chromiumoxide::cdp::browser_protocol::emulation::SetDeviceMetricsOverrideParams;
+        let _ = page
+            .execute(
+                SetDeviceMetricsOverrideParams::builder()
+                    .width(1920_i64)
+                    .height(1080_i64)
+                    .device_scale_factor(1.0)
+                    .mobile(false)
+                    .build()
+                    .map_err(|e| anyhow!("viewport build failed: {e}"))?,
+            )
+            .await;
+
+        page.goto(notebook_url)
+            .await
+            .map_err(|e| anyhow!("Navigation to notebook failed: {e}"))?;
+
+        random_delay(2000.0, 3000.0).await;
+
+        // Check & restore auth if needed
+        let is_auth = self.auth_manager.validate_cookies_expiry(&page).await;
+        if !is_auth {
+            if self.auth_manager.has_saved_state() {
+                tracing::info!("navigate_notebook_page: loading saved auth state...");
+                self.auth_manager
+                    .load_auth_state(&page)
+                    .await
+                    .map_err(|e| anyhow!("Auth state load failed: {e}"))?;
+                page.goto(notebook_url)
+                    .await
+                    .map_err(|e| anyhow!("Reload after auth failed: {e}"))?;
+                random_delay(2000.0, 3000.0).await;
+            } else {
+                let _ = page.close().await;
+                return Err(anyhow!(
+                    "Not authenticated. Please run setup_auth first, then retry."
+                ));
+            }
+        }
+
+        // Restore session storage (best-effort)
+        if let Err(e) = self.auth_manager.load_session_storage(&page).await {
+            tracing::warn!("navigate_notebook_page: load_session_storage (non-fatal): {e}");
+        }
+
+        // Wait for the NotebookLM UI to be ready (poll for chat textarea, up to 30s)
+        let chat_selectors = [
+            "textarea.query-box-input",
+            r#"textarea[aria-label="Feld für Anfragen"]"#,
+        ];
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let ready = {
+                let mut found = false;
+                for sel in &chat_selectors {
+                    if page.find_element(*sel).await.is_ok() {
+                        tracing::info!("navigate_notebook_page: UI ready ({})", sel);
+                        found = true;
+                        break;
+                    }
+                }
+                found
+            };
+            if ready {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                tracing::warn!("navigate_notebook_page: 30s timeout waiting for UI; proceeding anyway");
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+
+        // Extra settling time for the sources panel to render
+        random_delay(1500.0, 2500.0).await;
+        tracing::info!("navigate_notebook_page: notebook ready at '{}'", notebook_url);
+
+        Ok(page)
     }
 
     // -----------------------------------------------------------------------
